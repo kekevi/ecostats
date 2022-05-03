@@ -1,0 +1,177 @@
+---
+title: "freggies_new_model"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Image Classification using PCA and SVM
+
+To compare with our pretrained and fresh CNN models, we try to classify using SVM. In order to make the data more manageable, we first process all the training images through PC analysis to reduce the high number of dimensions that images have. Then we can use SVM (or other models like Knn) to predict classes.
+
+https://www.kaggle.com/code/waltermaffy/fruit-classification-pca-svm-knn-decision-tree/notebook
+
+```{r init}
+# best link to install tensorflow for m1: https://www.varokas.com/tensorflow-on-apple-silicon/
+library(tidyverse)
+library(OpenImageR)
+library(ggplot2)
+library(e1071)
+library(caret)
+# literally just for the confusion matrix plot
+library(cvms) 
+library(ggpubr)
+library(ggimage)
+```
+
+```{r}
+# nice vector splitter I found on https://stackoverflow.com/a/27626007
+chunk <- function(x, n) (mapply(function(a, b) (x[a:b]), seq.int(from=1, to=length(x), by=n), pmin(seq.int(from=1, to=length(x), by=n)+(n-1), length(x)), SIMPLIFY=FALSE))
+```
+
+```{bash}
+# These commands have been a godsend (from a ./train or ./test, etc. pwd)
+
+# finds fake jpg files
+file */* | grep -v "JPEG" > maybebad.txt
+
+# makes every file lowercase (use with CAUTION!)
+for f in */*; do mv "$f" "$f.tmp"; mv "$f.tmp" "`echo $f | tr "[:upper:]" "[:lower:]"`"; done
+```
+
+```{r selection}
+# freggies = c("apple", "banana", "watermelon")
+ffreggies = c("apple", "banana", "beetroot", "bell pepper", "cabbage", "capsicum", "carrot", "cauliflower", "chilli pepper", "corn", "cucumber", "eggplant", "garlic", "ginger", "grapes", "jalepeno", "kiwi", "lemon", "lettuce", "mango", "onion", "orange", "paprika", "pear", "peas", "pineapple", "pomegranate", "potato", "raddish", "soy beans", "spinach", "sweetcorn", "sweetpotato", "tomato", "turnip", "watermelon")
+
+splitfreggies = chunk(ffreggies, 6)
+# converts to numeric factor
+label2num = function(lab) which(lab == ffreggies)-1
+```
+
+```{r training image reduction, eval=F}
+getPaths = function (path, folders) {
+  df = tibble()
+  for (freg in folders) {
+      imgnames = list.files(paste(path, freg, sep = '/'))
+      df = bind_rows(df, tibble(
+        y = rep(label2num(freg), length(imgnames)), 
+        path = sapply(imgnames, function (p) paste(path, freg, p, sep = '/'))))
+  }
+  return(df)
+}
+
+whichset = 6
+freggies = splitfreggies[[whichset]]
+
+train_paths = getPaths("./train", freggies)
+test_paths = getPaths("./test", freggies)
+
+IMAGE_SIZE = 64 %/% 1
+
+raw_images = tibble()
+for (freg in label2num(freggies)) {
+  thisFregRaw = matrix(ncol=IMAGE_SIZE^2*3)
+  for (path in train_paths[train_paths$y == freg,]$path) {
+    print(path)
+    thisFregRaw = rbind(thisFregRaw, c(readImage(path)[,,1:3] %>% resizeImage(width=IMAGE_SIZE, height=IMAGE_SIZE)))
+  }
+  num_images = dim(thisFregRaw)[1]
+  raw_images = rbind(raw_images, cbind(y = freg, thisFregRaw) %>% na.omit())
+}
+
+write_csv(raw_images %>% tibble(), paste("freggies_by_6_set", whichset, ".csv", sep=""))
+
+pixel_names = names(raw_images)[-1]
+```
+
+```{r load in prereduced images}
+# raw_images = read_csv("./freggietest.csv")
+raw_images = bind_rows(
+  read_csv("freggies_by_6_set1.csv"),
+  read_csv("freggies_by_6_set2.csv"),
+  read_csv("freggies_by_6_set3.csv"),
+  read_csv("freggies_by_6_set4.csv"),
+  read_csv("freggies_by_6_set5.csv"),
+  read_csv("freggies_by_6_set6.csv"),
+)
+```
+
+```{r pca}
+# [-1] to remove the dependent variable
+freg.pca = prcomp(raw_images[-1] %>% data.frame(), scale=T)
+
+pcrange = 1:20
+var_explained = (freg.pca$sdev)^2 / sum(freg.pca$sdev^2)
+pca.var = data.frame(PC=pcrange,
+                     var_explained = var_explained[pcrange],
+                     cum_explained = cumsum(var_explained[pcrange]))
+pca.var %>% ggplot(aes(x=PC, y=var_explained, group=1)) + geom_point() + geom_line() + labs(title="Scree plot of variance explained per PCA")
+
+pca.var %>% ggplot(aes(x=PC, y=cum_explained, group=1)) + geom_point() + geom_line() + labs(title="Scree plot of cumulative variance explained per PCA")
+
+# we only use the minimum of the first __PCs that explain 95% of the variation or 10% of data length
+over95 = min(which(cumsum(var_explained) > .95), .10*dim(freg.pca$x)[1]) %/% 1
+```
+
+```{r svm}
+pced = cbind(raw_images[1], freg.pca$x) %>% tibble() %>% mutate(y = factor(y))
+pced = pced[1:over95]
+
+freg.svm = svm(y~., data=pced, kernel="linear", cost=0.01)
+
+pred.svc = predict(freg.svm, pced[-1])
+```
+
+```{r svm tuning, eval=F}
+svm.tuning = tune(svm, y~., data=pced, kernel="linear", probability=T, ranges=list(cost=c(0.001,0.01,0.1,1,5,10,100)))
+svm.tuning$best.model # cost was 0.01 as best
+```
+
+```{r}
+COLRANGE = 1:over95
+classify = function(imgpath, pcaobj, svmobj, pixel_names) {
+  imgframe = readImage(imgpath)[,,1:3] %>% resizeImage(width=IMAGE_SIZE, height=IMAGE_SIZE) %>% c()
+  names(imgframe) = pixel_names
+  imgframe = imgframe %>% data.frame %>% t
+  pcad.img = predict(pcaobj, imgframe %>% data.frame())
+  clas = predict(svmobj, rbind(pcad.img))
+  return(clas)
+} 
+
+```
+
+What the model sees:
+
+```{r}
+factToLab = function (fac) ffreggies[as.numeric(fac)]
+IMAGE_SIZE = 64
+path = "./test/banana/banana_shelf_bg.jpg"
+readImage(path) %>% resizeImage(width=IMAGE_SIZE, height=IMAGE_SIZE) %>% imageShow()
+classify(path, freg.pca, freg.svm, pixel_names) %>% factToLab()
+
+# it seems very sensitive to cropping
+path = "./test/banana/cropped_shelf.jpg"
+readImage(path) %>% resizeImage(width=IMAGE_SIZE, height=IMAGE_SIZE) %>% imageShow()
+classify(path, freg.pca, freg.svm, pixel_names) %>% factToLab()
+```
+
+```{r testing on all test images}
+test_paths = getPaths("./test", ffreggies)
+
+testres = sapply(test_paths$path, function (p) {
+  print(p) 
+  return(classify(p, freg.pca, freg.svm, pixel_names))})
+names(testres) = NULL
+testres = tibble(y=factor(test_paths$y), pred=testres, path=test_paths$path)
+print(classify("./test/apple/image_4.jpg", freg.pca, freg.svm, pixel_names))
+
+# accuracy:
+sum(testres$y == testres$pred)/length(testres$y)
+testres.lab = testres %>% mutate(y = factToLab(y), pred = factToLab(pred))
+cm = confusionMatrix(testres$pred, testres$y)$table
+
+confusion_matrix(testres.lab$y, testres.lab$pred) %>% plot_confusion_matrix(rotate_y_text=F) + rotate_x_text(hjust=0)
+```
+

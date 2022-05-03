@@ -1,0 +1,163 @@
+---
+title: "freggies"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init}
+# best link to install tensorflow for m1: https://www.varokas.com/tensorflow-on-apple-silicon/
+library(tidyverse)
+Sys.setenv(RETICULATE_PYTHON="/opt/homebrew/Caskroom/miniforge/base/bin/python")
+library(reticulate)
+library(tensorflow)
+library(keras)
+tf_version()
+is_keras_available()
+```
+
+# V2 trying based on highest rated keras example
+
+```{r v2 initializing}
+# freggies = c("apple", "banana", "corn", "grapes", "mango", "onion", "potato", "spinach", "tomato", "watermelon")
+freggies = c("apple", "banana", "watermelon")
+
+train_generator = image_data_generator(
+  preprocessing_function = imagenet_preprocess_input,
+  rotation_range = 30,
+  zoom_range = 0.15,
+  width_shift_range = 0.2,
+  height_shift_range = 0.2,
+  shear_range = 0.15,
+  horizontal_flip = TRUE,
+  fill_mode = "nearest"
+)
+
+test_generator = image_data_generator(
+  preprocessing_function = imagenet_preprocess_input,
+  rotation_range = 30,
+  zoom_range = 0.15,
+  width_shift_range = 0.2,
+  height_shift_range = 0.2,
+  shear_range = 0.15,
+  horizontal_flip = TRUE,
+  fill_mode = "nearest"
+)
+
+target_size = c(224, 224)
+batch_size = 32
+
+train_images = flow_images_from_directory(
+  "./train",
+  generator = train_generator,
+  target_size = target_size,
+  color_mode = "rgb",
+  class_mode = "categorical",
+  classes = freggies,
+  batch_size = batch_size,
+  shuffle = TRUE,
+  seed = 123,
+  # rotation_range = 30,
+  # zoom_range = 0.15,
+  # width_shift_range = 0.2,
+  # height_shift_range = 0.2,
+  # shear_range = 0.15,
+  # horizontal_flip = TRUE,
+  # fill_mode = "nearest"
+)
+
+val_images = flow_images_from_directory(
+  "./validation",
+  generator = train_generator,
+  target_size = target_size,
+  color_mode = "rgb",
+  class_mode = "categorical",
+  classes = freggies,
+  batch_size = batch_size,
+  shuffle = TRUE,
+  seed = 123,
+  # rotation_range = 30,
+  # zoom_range = 0.15,
+  # width_shift_range = 0.2,
+  # height_shift_range = 0.2,
+  # shear_range = 0.15,
+  # horizontal_flip = TRUE,
+  # fill_mode = "nearest"
+)
+
+test_images = flow_images_from_directory(
+  "./test",
+  generator = train_generator,
+  target_size = target_size,
+  # color_mode = "rgb",
+  class_mode = "categorical",
+  classes = freggies,
+  # batch_size = batch_size,
+  batch_size = 1,
+  shuffle = FALSE,
+  seed = 123,
+)
+
+train_samples = train_images$n
+val_samples = val_images$n
+test_samples = test_images$n
+# TODO: stuff below is for comparison
+# test_datagen = image_data_generator(rescale=1/255)
+# test_images = flow_images_from_directory(
+#   "./test",
+#   test_datagen,
+#   target_size = lowres_target,
+#   class_mode = "categorical", 
+#   classes = freggies,
+#   batch_size = 1,
+#   shuffle = FALSE,
+#   seed = 13
+# )
+```
+
+```{r v2 loading mobilenet architecture}
+pretrained_model = application_mobilenet_v2(
+  input_shape = c(target_size, 3),
+  include_top = FALSE,
+  weights = "imagenet",
+  pooling = "avg"
+)
+pretrained_model$trainable = FALSE
+```
+
+```{r training}
+inputs = pretrained_model$input
+outputs = pretrained_model$output %>%
+  layer_dense(128, activation = "relu") %>%
+  layer_dense(128, activation = "relu") %>%
+  layer_dense(length(freggies), activation="softmax")
+
+model = keras_model(inputs = inputs, outputs = outputs)
+model = model %>% compile(optimizer="adam", loss="categorical_crossentropy", metrics=c("accuracy"))
+history = model %>% fit(
+  train_images,
+  steps_per_epoch = train_samples %/% batch_size,
+  epochs = epochs,
+  validation_data = val_images,
+  validation_steps = val_samples %/% batch_size,
+  callbacks = callback_early_stopping(
+    monitor = "val_loss",
+    patience = 2,
+    restore_best_weights = TRUE)
+)
+
+plot(history)
+```
+
+```{r v2 prediction}
+model %>% evaluate(test_images, steps = as.integer(test_images$n))
+test_images$reset()
+prediction = model %>% 
+  predict(
+    test_images,
+    steps = as.integer(test_images$n)
+  )
+prediction.likely = prediction %>% k_argmax()
+```
