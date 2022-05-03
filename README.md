@@ -1,6 +1,8 @@
 # Fruit and Veggies Comparison
 ## the Ecostaticians
 
+A comparison of machine learning models for classifying images of fruits and vegetables.
+
 **Members**:
 - Jake James
 - Kay Bean
