@@ -1,0 +1,216 @@
+---
+title: "Forest"
+author: "Elizabeth Yenni"
+date: "4/15/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# CORRECT DIRECTORY BELOW, should be path to a folder containing the train and test data from kaggle
+my_dir = ""
+knitr::opts_knit$set(root.dir = my_dir)
+```
+
+```{r, echo=FALSE, message=FALSE}
+library(tidyverse)# metapackage of all tidyverse packages
+library(tidyr)
+library(png)  
+library(grid)
+library(jpeg)
+library(imager)
+library(ggplot2)
+library(magick)
+library(ggplot2)
+library(abind)
+library(readr)
+library(randomForest)
+library(dplyr)
+```
+
+# Set up the directory
+
+```{r}
+label_list <- dir("train/")
+```
+
+```{r}
+# Store each image as vector of length 28x28=784 in train_images
+dir_train <- dir("train/")
+set <- "train/"
+files <-  list.files(set, pattern = ".", all.files = FALSE, recursive = TRUE, full.names = TRUE)
+# train_labels <- matrix(ncol=length(files), nrow=1) # matrix of "apple" "watermelon" etc
+train_labels <- c()
+train_images <- array(data = rep(0,28*28), dim = c(1,28*28))
+
+for (folder in dir_train) {
+  folder_path <- paste(set, folder, sep="")
+  for (file in list.files(folder_path)) {
+    if (and(folder=="beetroot", file=="Image_75.jpg") 
+        || and(folder=="carrot", file=="Image_78.jpg") 
+        || and(folder=="chilli pepper", file=="Image_20.jpg") 
+        || and(folder=="chilli pepper", file=="Image_36.jpg") 
+        || and(folder=="cucumber", file=="Image_58.jpg") 
+        || and(folder=="eggplant", file=="Image_56.jpg") 
+        || and(folder=="jalepeno", file=="Image_38.jpg") 
+        || and(folder=="jalepeno", file=="Image_61.jpg") 
+        || and(folder=="onion", file=="Image_52.jpg") 
+        || and(folder=="tomato", file=="Image_43.jpg") 
+        || and(folder=="tomato", file=="Image_81.jpg") 
+        || and(folder=="turnip", file=="Image_43.jpg")) {
+      next
+    }
+    # Getting vector of labels
+    img_label <- file
+    img_path <- paste(folder_path,"/", img_label, sep="")
+    train_labels <- c(train_labels, folder)
+    
+    # vectorize images as 28x28
+    img <- image_read(img_path)
+    thmb <- image_scale(img, "28x28!")# resize(jpg, size_x=28, size_y=28)
+    
+    png <- image_convert(thmb, format = "png", colorspace = "gray")
+    raster <- as.raster(png)
+    v <- as.vector(raster)
+    
+    v_num <- c()
+    for (i in 1:784) {
+      rgb.array <- col2rgb(v[i])
+      v_num <- c(v_num, rgb.array[1])
+    }
+    v_num
+    train_images <- rbind(train_images, v_num/255)
+  }
+}
+
+train_images <- train_images[-1,]
+dim(train_images)
+length(train_labels)
+```
+
+```{r}
+# Store each image as vector of length 28x28=784 in test_images
+dir_test <- dir("test/")
+set <- "test/"
+files <-  list.files(set, pattern = ".", all.files = FALSE, recursive = TRUE, full.names = TRUE)
+# test_labels <- matrix(ncol=length(files), nrow=1) # matrix of "apple" "watermelon" etc
+test_labels <- c()
+test_images <- array(data = rep(0,28*28), dim = c(1,28*28))
+
+for (folder in dir_test) {
+  folder_path <- paste(set, folder, sep="")
+  for (file in list.files(folder_path)) {
+    if (and(folder=="beetroot", file=="Image_75.jpg") 
+        || and(folder=="carrot", file=="Image_78.jpg") 
+        || and(folder=="chilli pepper", file=="Image_20.jpg") 
+        || and(folder=="chilli pepper", file=="Image_36.jpg") 
+        || and(folder=="cucumber", file=="Image_58.jpg") 
+        || and(folder=="eggplant", file=="Image_56.jpg") 
+        || and(folder=="jalepeno", file=="Image_38.jpg") 
+        || and(folder=="jalepeno", file=="Image_61.jpg") 
+        || and(folder=="onion", file=="Image_52.jpg") 
+        || and(folder=="tomato", file=="Image_43.jpg") 
+        || and(folder=="tomato", file=="Image_81.jpg") 
+        || and(folder=="turnip", file=="Image_43.jpg")) {
+      next
+    }
+    # Getting vector of labels
+    img_label <- file
+    img_path <- paste(folder_path,"/", img_label, sep="")
+    test_labels <- c(test_labels, folder)
+    
+    # vectorize images as 28x28
+    img <- image_read(img_path)
+    thmb <- image_scale(img, "28x28!")# resize(jpg, size_x=28, size_y=28)
+    
+    png <- image_convert(thmb, format = "png", colorspace = "gray")
+    raster <- as.raster(png)
+    v <- as.vector(raster)
+    
+    v_num <- c()
+    for (i in 1:784) {
+      rgb.array <- col2rgb(v[i])
+      v_num <- c(v_num, rgb.array[1])
+    }
+    v_num
+    test_images <- rbind(test_images, v_num/255)
+  }
+}
+
+test_images <- test_images[-1,]
+dim(test_images)
+length(test_labels)
+```
+
+# Start of Model
+
+```{r}
+# Get a numeric version of labels. Instead of "apple", 0; instead of "bananan", 1; etc
+num_train_labels <- array(data = 0, dim = c(1))
+class_names <- c()
+
+last_name = ""
+current_num = -1
+
+for (name in train_labels) {
+  if (name != last_name) {
+    class_names <- c(class_names, name)
+    last_name=name
+    current_num = current_num+1
+  }
+  num_train_labels <- abind(num_train_labels, current_num, along = 1)
+}
+num_train_labels <- num_train_labels[-1]
+
+# For Test Labels
+num_test_labels <- array(data = 0, dim = c(1))
+last_name = ""
+current_num = -1
+
+for (name in test_labels) {
+  if (name != last_name) {
+    last_name=name
+    current_num = current_num+1
+  }
+  num_test_labels <- abind(num_test_labels, current_num, along = 1)
+}
+
+num_test_labels <- num_test_labels[-1]
+```
+
+```{r}
+train_labels <- as.factor(num_train_labels)
+test_labels <- as.factor(num_train_labels)
+
+head(train_labels, 20)
+head(test_labels, 20)
+```
+
+```{r}
+# Create random forest model
+rf <- randomForest(x = as.matrix(train_images), y = train_labels, xtest = as.matrix(test_images), ntree = 50, keep.forest=TRUE)
+rf
+```
+
+# Evaluate the Model
+
+```{r}
+# Overall Accuracy on Training Model
+1 - mean(rf$err.rate)
+```
+
+```{r}
+err_df <- as.data.frame(rf$err.rate)
+err_df %>%
+  select(-"OOB") %>%
+  colMeans()
+```
+
+```{r}
+# Accuracy on Test Images
+y_pred = predict(rf, data = test_images)
+cm = table(test_labels, y_pred)
+cm
+
+sum(y_pred==test_labels)/(sum(y_pred==test_labels)+sum(y_pred!=test_labels)) # 0.214631
+```
